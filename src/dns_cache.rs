@@ -55,7 +55,7 @@ impl From<LookupIp> for AddrSet {
 // // calls will be returned from cache.
 // resolver.has_changed("www.example.com.", addrset)
 // ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CachedResolver {
     // The configuration of the cached_resolver.
     pub config: CachedResolverConfig,

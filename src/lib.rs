@@ -7,6 +7,7 @@ pub mod scram;
 pub mod server;
 pub mod sharding;
 pub mod stats;
+pub mod dns_cache;
 pub mod tls;
 
 /// Format chrono::Duration to be more human-friendly.

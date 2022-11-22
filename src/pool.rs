@@ -18,6 +18,7 @@ use crate::errors::Error;
 use crate::server::Server;
 use crate::sharding::ShardingFunction;
 use crate::stats::{get_reporter, Reporter};
+use crate::dns_cache::{CachedResolver, CachedResolverConfig};
 
 pub type ProcessId = i32;
 pub type SecretKey = i32;
@@ -132,12 +133,37 @@ pub struct ConnectionPool {
 
     /// Pool configuration.
     pub settings: PoolSettings,
+
+    /// CachedResolver to use when dns_cache is enabled
+    pub cached_resolver: Arc<Option<CachedResolver>>,
 }
 
 impl ConnectionPool {
     /// Construct the connection pool from the configuration.
     pub async fn from_config(client_server_map: ClientServerMap) -> Result<(), Error> {
         let config = get_config();
+
+	// Configure dns_cache if enabled
+	let mut cached_resolver: Arc<Option<CachedResolver>> = Arc::new(None);
+	if config.general.dns_cache_enabled {
+	    info!("Starting Dns cache");
+	    let cached_resolver_config = CachedResolverConfig {dns_max_ttl: config.general.dns_max_ttl };
+	    cached_resolver = match CachedResolver::new(cached_resolver_config) {
+		Ok(ok) => {
+		    let mut refresher_cached_resolver = ok.clone();
+		    info!("Scheduling DNS refresh loop");
+		    tokio::task::spawn(async move {
+			refresher_cached_resolver.refresh_dns_entries_loop().await;
+		    });
+		    Arc::new(Some(ok))
+		},
+		Err(err) => {
+		    error!("Error Starting cached_resolver error: {:?}", err);
+		    error!("Will continue without this feature");
+		    Arc::new(None)
+		}
+	    };
+	};
 
         let mut new_pools = HashMap::new();
         let mut address_id = 0;
@@ -246,6 +272,7 @@ impl ConnectionPool {
                 let mut pool = ConnectionPool {
                     databases: shards,
                     addresses,
+		    cached_resolver: cached_resolver.clone(),
                     banlist: Arc::new(RwLock::new(banlist)),
                     stats: get_reporter(),
                     server_info: BytesMut::new(),
@@ -596,6 +623,12 @@ impl ManageConnection for ServerPool {
     /// Attempts to create a new connection.
     async fn connect(&self) -> Result<Self::Connection, Self::Error> {
         info!("Creating a new server connection {:?}", self.address);
+
+	let cached_resolver = match get_pool(&self.database, &self.user.username) {
+	    Some(pool) => pool.cached_resolver,
+	    None => Arc::new(None),
+	};
+	
         let server_id = rand::random::<i32>();
 
         self.stats.server_register(
@@ -614,6 +647,7 @@ impl ManageConnection for ServerPool {
             &self.user,
             &self.database,
             self.client_server_map.clone(),
+	    cached_resolver,
             self.stats.clone(),
         )
         .await

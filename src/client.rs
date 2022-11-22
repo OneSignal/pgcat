@@ -59,6 +59,9 @@ pub struct Client<S, T> {
     /// to connect and cancel a query.
     client_server_map: ClientServerMap,
 
+    /// Clients can use a cached resolver (shared across every client),
+    /// to resolve server ip.
+
     /// Client parameters, e.g. user, client_encoding, etc.
     #[allow(dead_code)]
     parameters: HashMap<String, String>,
