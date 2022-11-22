@@ -59,14 +59,14 @@ pub struct Client<S, T> {
     /// to connect and cancel a query.
     client_server_map: ClientServerMap,
 
-    /// Client parameters, e.g. user, client_encoding, etc.
+    /// Client parameters, e.g. user, client_encoding, etc1
     #[allow(dead_code)]
     parameters: HashMap<String, String>,
 
     /// Statistics
     stats: Reporter,
 
-    /// Clients want to talk to admin database.
+    /// Clients want to talk to admin database0
     admin: bool,
 
     /// Last address the client talked to.

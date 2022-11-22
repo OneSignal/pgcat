@@ -208,7 +208,7 @@ impl General {
     }
 
     pub fn default_dns_max_ttl() -> u64 {
-	30
+        30
     }
 
     pub fn default_healthcheck_timeout() -> u64 {
@@ -238,8 +238,8 @@ impl Default for General {
             ban_time: Self::default_ban_time(),
             log_client_connections: false,
             log_client_disconnections: false,
-	    dns_cache_enabled: false,
-	    dns_max_ttl: Self::default_dns_max_ttl(),
+            dns_cache_enabled: false,
+            dns_max_ttl: Self::default_dns_max_ttl(),
             autoreload: false,
             tls_certificate: None,
             tls_private_key: None,

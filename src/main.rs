@@ -64,6 +64,7 @@ mod admin;
 mod client;
 mod config;
 mod constants;
+mod dns_cache;
 mod errors;
 mod messages;
 mod pool;
@@ -74,7 +75,6 @@ mod server;
 mod sharding;
 mod stats;
 mod tls;
-mod dns_cache;
 
 use crate::config::{get_config, reload_config, VERSION};
 use crate::pool::{ClientServerMap, ConnectionPool};

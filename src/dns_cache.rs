@@ -1,9 +1,9 @@
 use log::{debug, error};
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::io;
 use tokio::time::{sleep, Duration};
 use trust_dns_resolver::lookup_ip::LookupIp;
 use trust_dns_resolver::TokioAsyncResolver;
@@ -55,7 +55,7 @@ impl From<LookupIp> for AddrSet {
 // // calls will be returned from cache.
 // resolver.has_changed("www.example.com.", addrset)
 // ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CachedResolver {
     // The configuration of the cached_resolver.
     pub config: CachedResolverConfig,
@@ -91,7 +91,7 @@ impl CachedResolver {
     //
     pub fn new(config: CachedResolverConfig) -> io::Result<Self> {
         // Construct a new Resolver with default configuration options
-	let resolver = Arc::new(TokioAsyncResolver::tokio_from_system_conf()?);
+        let resolver = Arc::new(TokioAsyncResolver::tokio_from_system_conf()?);
         let data = Arc::new(RwLock::new(HashMap::new()));
 
         Ok(Self {
@@ -103,46 +103,53 @@ impl CachedResolver {
 
     // Schedules the refresher
     pub async fn refresh_dns_entries_loop(&mut self) {
-	let data = self.data.clone();
-	let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
+        let data = self.data.clone();
+        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
         let interval = Duration::from_secs(self.config.dns_max_ttl);
         loop {
-	    debug!("Begin refreshing cached DNS addresses.");
-	    // To minimize the time we hold the lock, we first create
-	    // an array with keys.
-	    let mut hostnames: Vec<String> = Vec::new();
-	    {
+            debug!("Begin refreshing cached DNS addresses.");
+            // To minimize the time we hold the lock, we first create
+            // an array with keys.
+            let mut hostnames: Vec<String> = Vec::new();
+            {
                 for hostname in data.read().unwrap().keys() {
-		    hostnames.push(hostname.clone());
+                    hostnames.push(hostname.clone());
                 }
-	    }
+            }
 
-	    for hostname in hostnames.iter() {
+            for hostname in hostnames.iter() {
                 match CachedResolver::fetch_from_data_cache(data.clone(), hostname.as_str()) {
-		    Some(addrset) => {
-                        match resolver.lookup_ip(hostname).await {
-			    Ok(lookup_ip) => {
-				let new_addrset = AddrSet::from(lookup_ip);
-				debug!("Obtained address for host ({}) -> ({:?})", hostname, new_addrset);
+                    Some(addrset) => match resolver.lookup_ip(hostname).await {
+                        Ok(lookup_ip) => {
+                            let new_addrset = AddrSet::from(lookup_ip);
+                            debug!(
+                                "Obtained address for host ({}) -> ({:?})",
+                                hostname, new_addrset
+                            );
 
-				if addrset != new_addrset {
-				    debug!("Addr changed from {:?} to {:?} updating cache.", addrset, new_addrset);
-				    CachedResolver::store_in_cache(data.clone(), hostname, new_addrset);
-				}
-			    },
-			    Err(err) => {
-				error!("There was an error trying to resolv {}: ({}).", hostname, err);
-			    }
+                            if addrset != new_addrset {
+                                debug!(
+                                    "Addr changed from {:?} to {:?} updating cache.",
+                                    addrset, new_addrset
+                                );
+                                CachedResolver::store_in_cache(data.clone(), hostname, new_addrset);
+                            }
                         }
-		    }
-		    None => {
+                        Err(err) => {
+                            error!(
+                                "There was an error trying to resolv {}: ({}).",
+                                hostname, err
+                            );
+                        }
+                    },
+                    None => {
                         error!("Could not obtain expected address from cache, this should not happen, \
 				as this cache does not allow deleting addresses.");
-		    }
+                    }
                 }
-	    }
-	    debug!("Finished refreshing cached DNS addresses.");
-	    sleep(interval).await;
+            }
+            debug!("Finished refreshing cached DNS addresses.");
+            sleep(interval).await;
         }
     }
 
@@ -166,16 +173,16 @@ impl CachedResolver {
     // ```
     //
     pub async fn lookup_ip(&mut self, host: &str) -> ResolveResult<AddrSet> {
-	debug!("Lookup up {} in cache", host);
+        debug!("Lookup up {} in cache", host);
         match self.fetch_from_cache(host) {
             Some(addr_set) => {
-		debug!("Cache hit!");
-		Ok(addr_set)
-	    },
+                debug!("Cache hit!");
+                Ok(addr_set)
+            }
             None => {
-		debug!("Not found, executing a dns query!");
+                debug!("Not found, executing a dns query!");
                 let addr_set = AddrSet::from(self.resolver.clone().lookup_ip(host).await?);
-		debug!("Obtained: {:?}", addr_set);
+                debug!("Obtained: {:?}", addr_set);
                 CachedResolver::store_in_cache(self.data.clone(), host, addr_set.clone());
                 Ok(addr_set)
             }
@@ -247,7 +254,7 @@ mod tests {
         let mut resolver = CachedResolver::new(config).unwrap();
         let hostname = "www.idontexists.";
         let response = resolver.lookup_ip(hostname).await;
-	assert!(matches!(response, Err(ResolveError{ .. })));
+        assert!(matches!(response, Err(ResolveError { .. })));
     }
 
     #[tokio::test]
@@ -256,8 +263,8 @@ mod tests {
         let mut resolver = CachedResolver::new(config).unwrap();
         let hostname = "w  ww.idontexists.";
         let response = resolver.lookup_ip(hostname).await;
-	assert!(matches!(response, Err(ResolveError{ .. })));
-	assert!(!resolver.has_changed(hostname, &AddrSet::new()));
+        assert!(matches!(response, Err(ResolveError { .. })));
+        assert!(!resolver.has_changed(hostname, &AddrSet::new()));
     }
 
     #[tokio::test]
@@ -265,17 +272,17 @@ mod tests {
     // and does not responds with every available ip everytime, so
     // if I cache here, it will miss after one cache iteration or two.
     async fn thread() {
-	env_logger::init();
+        env_logger::init();
         let config = CachedResolverConfig { dns_max_ttl: 10 };
         let mut resolver = CachedResolver::new(config).unwrap();
         let hostname = "www.google.com.";
         let response = resolver.lookup_ip(hostname).await;
         let addr_set = response.unwrap();
         assert!(!resolver.has_changed(hostname, &addr_set));
-	let mut resolver_for_refresher = resolver.clone();
-	let _thread_handle = tokio::task::spawn(async move {
-	    resolver_for_refresher.refresh_dns_entries_loop().await;
-	});
-	assert!(!resolver.has_changed(hostname, &addr_set));
+        let mut resolver_for_refresher = resolver.clone();
+        let _thread_handle = tokio::task::spawn(async move {
+            resolver_for_refresher.refresh_dns_entries_loop().await;
+        });
+        assert!(!resolver.has_changed(hostname, &addr_set));
     }
 }
