@@ -41,6 +41,15 @@ log_client_disconnections = false
 # Reload config automatically if it changes.
 autoreload = false
 
+# If enabled hostname resolution will be cached and
+# and server connections are invalidated if a change on the ip is
+# detected. This check is done every `dns_max_ttl` seconds.
+# dns_cache_enabled = false
+
+# The number of seconds to wait until we check again the
+# cached hostnames resolution. 30 seconds by default.
+# dns_max_ttl = 30
+
 # TLS
 # tls_certificate = "server.cert"
 # tls_private_key = "server.key"
