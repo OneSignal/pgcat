@@ -36,6 +36,7 @@ extern crate sqlparser;
 extern crate tokio;
 extern crate tokio_rustls;
 extern crate toml;
+extern crate trust_dns_resolver;
 
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
@@ -63,6 +64,7 @@ mod admin;
 mod client;
 mod config;
 mod constants;
+mod dns_cache;
 mod errors;
 mod messages;
 mod pool;
