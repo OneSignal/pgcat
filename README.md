@@ -274,6 +274,8 @@ The config can be reloaded by sending a `kill -s SIGHUP` to the process or by qu
 | `default_role`          | no                   |
 | `primary_reads_enabled` | no                   |
 | `query_parser_enabled`  | no                   |
+| `dns_max_ttl`           | no                   |
+| `dns_cache_enabled`     | no                   |
 
 
 ## Benchmarks

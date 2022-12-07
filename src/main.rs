@@ -36,6 +36,7 @@ extern crate sqlparser;
 extern crate tokio;
 extern crate tokio_rustls;
 extern crate toml;
+extern crate trust_dns_resolver;
 
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
@@ -64,6 +65,7 @@ mod admin;
 mod client;
 mod config;
 mod constants;
+mod dns_cache;
 mod errors;
 mod messages;
 mod pool;
@@ -163,8 +165,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (stats_tx, stats_rx) = mpsc::channel(100_000);
         REPORTER.store(Arc::new(Reporter::new(stats_tx.clone())));
 
-        // Connection pool that allows to query all shards and replicas.
-        match ConnectionPool::from_config(client_server_map.clone()).await {
+	// Starts (if enabled) dns cache before pools initialization
+	match dns_cache::CachedResolver::from_config().await {
+            Ok(_) => (),
+            Err(err) => error!("DNS cache initialization error: {:?}", err),
+	};
+
+	// Connection pool that allows to query all shards and replicas.
+	match ConnectionPool::from_config(client_server_map.clone()).await {
             Ok(_) => (),
             Err(err) => {
                 error!("Pool error: {:?}", err);
