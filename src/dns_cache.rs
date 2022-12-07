@@ -59,21 +59,24 @@ impl From<LookupIp> for AddrSet {
 /// // store in cache by using `has_changed`.
 /// resolver.has_changed("www.example.com.", addrset)
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CachedResolver {
     // The configuration of the cached_resolver.
-    config: CachedResolverConfig,
+    config: Arc<RwLock<CachedResolverConfig>>,
 
     // This is the hash that contains the hash.
     data: Arc<RwLock<HashMap<String, AddrSet>>>,
 
     // The resolver to be used for DNS queries.
     resolver: Arc<TokioAsyncResolver>,
+
+    // A reference to the RefreshLoop
+    refresh_loop: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 ///
 /// Configuration
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct CachedResolverConfig {
     /// Amount of time in secods that a resolved dns address is considered stale.
     pub dns_max_ttl: u64,
@@ -99,18 +102,24 @@ impl CachedResolver {
         // Construct a new Resolver with default configuration options
         let resolver = Arc::new(TokioAsyncResolver::tokio_from_system_conf()?);
         let data = Arc::new(RwLock::new(HashMap::new()));
+        let config = Arc::new(RwLock::new(config));
 
         let self_ref = Arc::new(Self {
             config,
             resolver,
             data,
+            refresh_loop: Arc::new(RwLock::new(None)),
         });
-        let clone_self_ref = self_ref.clone();
+        let cloned_self_ref = self_ref.clone();
 
         info!("Scheduling DNS refresh loop");
-        tokio::task::spawn(async move {
-            clone_self_ref.refresh_dns_entries_loop().await;
+        let refresh_loop = tokio::task::spawn(async move {
+            cloned_self_ref.refresh_dns_entries_loop().await;
         });
+
+        let cloned_self_ref = self_ref.clone();
+        let mut handle = cloned_self_ref.refresh_loop.write().unwrap();
+        *handle = Some(refresh_loop);
 
         Ok(self_ref)
     }
@@ -118,7 +127,6 @@ impl CachedResolver {
     // Schedules the refresher
     async fn refresh_dns_entries_loop(&self) {
         let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap();
-        let interval = Duration::from_secs(self.config.dns_max_ttl);
         loop {
             debug!("Begin refreshing cached DNS addresses.");
             // To minimize the time we hold the lock, we first create
@@ -160,6 +168,11 @@ impl CachedResolver {
                 }
             }
             debug!("Finished refreshing cached DNS addresses.");
+            let interval: Duration;
+            {
+                let max_ttl = self.config.clone().read().unwrap().dns_max_ttl;
+                interval = Duration::from_secs(max_ttl);
+            }
             sleep(interval).await;
         }
     }
