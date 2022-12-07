@@ -166,6 +166,12 @@ pub struct General {
     #[serde(default)] // False
     pub log_client_disconnections: bool,
 
+    #[serde(default)] // False
+    pub dns_cache_enabled: bool,
+
+    #[serde(default = "General::default_dns_max_ttl")]
+    pub dns_max_ttl: u64,
+
     #[serde(default = "General::default_shutdown_timeout")]
     pub shutdown_timeout: u64,
 
@@ -211,6 +217,10 @@ impl General {
         60000
     }
 
+    pub fn default_dns_max_ttl() -> u64 {
+        30
+    }
+
     pub fn default_healthcheck_timeout() -> u64 {
         1000
     }
@@ -244,6 +254,8 @@ impl Default for General {
             worker_threads: Self::default_worker_threads(),
             log_client_connections: false,
             log_client_disconnections: false,
+            dns_cache_enabled: false,
+            dns_max_ttl: Self::default_dns_max_ttl(),
             autoreload: false,
             tls_certificate: None,
             tls_private_key: None,

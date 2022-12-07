@@ -3,6 +3,7 @@
 use bytes::{Buf, BufMut, BytesMut};
 use log::{debug, error, info, trace, warn};
 use std::io::Read;
+use std::net::IpAddr;
 use std::time::SystemTime;
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::{
@@ -12,6 +13,7 @@ use tokio::net::{
 
 use crate::config::{Address, User};
 use crate::constants::*;
+use crate::dns_cache::{AddrSet, CACHED_RESOLVER};
 use crate::errors::Error;
 use crate::messages::*;
 use crate::pool::ClientServerMap;
@@ -68,6 +70,9 @@ pub struct Server {
 
     // Last time that a successful server send or response happened
     last_activity: SystemTime,
+
+    // Associated addresses used
+    addr_set: Option<AddrSet>,
 }
 
 impl Server {
@@ -81,6 +86,28 @@ impl Server {
         client_server_map: ClientServerMap,
         stats: Reporter,
     ) -> Result<Server, Error> {
+        let cached_resolver = CACHED_RESOLVER.load();
+        let addr_set = match cached_resolver.as_ref() {
+            Some(cached_resolver) => {
+                if address.host.parse::<IpAddr>().is_err() {
+                    debug!("Resolving {}", &address.host);
+                    match cached_resolver.load().lookup_ip(&address.host).await {
+                        Ok(ok) => {
+                            debug!("Obtained: {:?}", ok);
+                            Some(ok)
+                        }
+                        Err(err) => {
+                            warn!("Error trying to resolve {}, ({:?})", &address.host, err);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
         let mut stream =
             match TcpStream::connect(&format!("{}:{}", &address.host, address.port)).await {
                 Ok(stream) => stream,
@@ -329,6 +356,7 @@ impl Server {
                         bad: false,
                         needs_cleanup: false,
                         client_server_map,
+                        addr_set,
                         connected_at: chrono::offset::Utc::now().naive_utc(),
                         stats,
                         application_name: String::new(),
@@ -558,6 +586,13 @@ impl Server {
     /// Server & client are out of sync, we must discard this connection.
     /// This happens with clients that misbehave.
     pub fn is_bad(&self) -> bool {
+        if let Some(cached_resolver) = CACHED_RESOLVER.load().as_ref() {
+            if let Some(addr_set) = &self.addr_set {
+                return cached_resolver
+                    .load()
+                    .has_changed(self.address.host.as_str(), addr_set);
+            }
+        }
         self.bad
     }
 
