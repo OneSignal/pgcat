@@ -10,7 +10,6 @@ use tokio::sync::mpsc::Sender;
 
 use crate::admin::{generate_server_info_for_admin, handle_admin};
 use crate::config::{get_config, Address, PoolMode};
-use crate::constants::*;
 use crate::errors::Error;
 use crate::messages::*;
 use crate::pool::{get_pool, ClientServerMap, ConnectionPool};
@@ -18,6 +17,7 @@ use crate::query_router::{Command, QueryRouter};
 use crate::server::Server;
 use crate::stats::{get_reporter, Reporter};
 use crate::tls::Tls;
+use crate::{auth_passthrough::AuthPassthrough, constants::*};
 
 use tokio_rustls::server::TlsStream;
 
@@ -359,6 +359,20 @@ pub async fn startup_tls(
     }
 }
 
+async fn refetch_auth_hash(pool: &ConnectionPool) -> Result<String, Error> {
+    let address = pool.address(0, 0);
+    if let Some(apt) = AuthPassthrough::from_pool_settings(&pool.settings) {
+        let hash = apt.fetch_hash(address).await?;
+
+        return Ok(hash);
+    }
+
+    Err(Error::ClientError(format!(
+        "Could not obtain hash for {{ username: {:?}, database: {:?} }}. Auth passthrough not enabled.",
+        address.username, address.database
+    )))
+}
+
 impl<S, T> Client<S, T>
 where
     S: tokio::io::AsyncRead + std::marker::Unpin,
@@ -492,13 +506,47 @@ where
                 }
             };
 
-            // Compare server and client hashes.
-            let password_hash = md5_hash_password(username, &pool.settings.user.password, &salt);
+            // Obtain the hash to compare, we give preference to that written in plaintext in config
+            // if there is nothing set in plaintext and auth_query is configured, we use the hash obtained
+            // when the pool was created. If there is no hash there, we try to fetch it one more time.
+            let password_hash = if let Some(password) = &pool.settings.user.password {
+                Some(md5_hash_password(username, password, &salt))
+            } else {
+                if !get_config().is_auth_query_configured() {
+                    return Err(Error::ClientError(format!("Client auth is not possible, no password set for username: {:?} in config and not using auth passthrough.", username)));
+                }
 
-            if password_hash != password_response {
-                warn!("Invalid password {{ username: {:?}, pool_name: {:?}, application_name: {:?} }}", username, pool_name, application_name);
+                let mut hash = None;
+                if let Some(ref value) = *pool.auth_hash.clone().read() {
+                    hash = Some(value.clone());
+                }
+
+                if hash.is_none() {
+                    warn!("Query auth configured but not hash password found for pool {}. Will try to refetch it.", pool_name);
+                    hash = Some(refetch_auth_hash(&pool).await?);
+                };
+
+                Some(md5_hash_second_pass(&hash.unwrap(), &salt))
+            };
+
+            // Once we have the resulting hash, we compare with what the client gave us.
+            // If they do not match and auth query is set up, we try to refetch the hash one more time
+            // to see if the password has changed since the pool was created.
+            if password_hash.unwrap() != password_response {
+                warn!("Invalid password {{ username: {:?}, pool_name: {:?}, application_name: {:?} }}, will try to refetch it.", username, pool_name, application_name);
+                let fetched_hash = refetch_auth_hash(&pool).await?;
+                let new_password_hash = md5_hash_second_pass(&fetched_hash, &salt);
+
+                // Ok password changed in server an auth is possible.
+                if new_password_hash == password_response {
+                    warn!("Password for {{ username: {:?}, pool_name: {:?}, application_name: {:?} }}, changed in server. Updating.", username, pool_name, application_name);
+                    {
+                        let mut pool_auth_hash = pool.auth_hash.write();
+                        *pool_auth_hash = Some(fetched_hash);
+                    }
+                }
+
                 wrong_password(&mut write, username).await?;
-
                 return Err(Error::ClientError(format!("Invalid password {{ username: {:?}, pool_name: {:?}, application_name: {:?} }}", username, pool_name, application_name)));
             }
 

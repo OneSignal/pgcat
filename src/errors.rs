@@ -14,4 +14,6 @@ pub enum Error {
     StatementTimeout,
     ShuttingDown,
     ParseBytesError(String),
+    AuthError(String),
+    AuthPassthroughError(String),
 }

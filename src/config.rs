@@ -13,7 +13,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
 use crate::errors::Error;
-use crate::pool::{ClientServerMap, ConnectionPool};
+use crate::pool::{drop_auth_hashes, ClientServerMap, ConnectionPool};
 use crate::sharding::ShardingFunction;
 use crate::tls::{load_certs, load_keys};
 
@@ -127,7 +127,7 @@ impl Address {
 #[derive(Clone, PartialEq, Hash, Eq, Serialize, Deserialize, Debug)]
 pub struct User {
     pub username: String,
-    pub password: String,
+    pub password: Option<String>,
     pub pool_size: u32,
     #[serde(default)] // 0
     pub statement_timeout: u64,
@@ -137,7 +137,7 @@ impl Default for User {
     fn default() -> User {
         User {
             username: String::from("postgres"),
-            password: String::new(),
+            password: None,
             pool_size: 15,
             statement_timeout: 0,
         }
@@ -197,6 +197,10 @@ pub struct General {
     pub tls_private_key: Option<String>,
     pub admin_username: String,
     pub admin_password: String,
+
+    pub auth_query: Option<String>,
+    pub auth_query_user: Option<String>,
+    pub auth_query_password: Option<String>,
 }
 
 impl General {
@@ -276,6 +280,9 @@ impl Default for General {
             tls_private_key: None,
             admin_username: String::from("admin"),
             admin_password: String::from("admin"),
+            auth_query: None,
+            auth_query_user: None,
+            auth_query_password: None,
         }
     }
 }
@@ -350,6 +357,10 @@ pub struct Pool {
 
     pub shards: BTreeMap<String, Shard>,
     pub users: BTreeMap<String, User>,
+
+    pub auth_query: Option<String>,
+    pub auth_query_user: Option<String>,
+    pub auth_query_password: Option<String>,
     // Note, don't put simple fields below these configs. There's a compatability issue with TOML that makes it
     // incompatible to have simple fields in TOML after complex objects. See
     // https://users.rust-lang.org/t/why-toml-to-string-get-error-valueaftertable/85903
@@ -360,6 +371,12 @@ impl Pool {
         let mut s = DefaultHasher::new();
         self.hash(&mut s);
         s.finish()
+    }
+
+    pub fn is_auth_query_configured(&self) -> bool {
+        self.auth_query_password.is_some()
+            && self.auth_query_user.is_some()
+            && self.auth_query_password.is_some()
     }
 
     pub fn default_pool_mode() -> PoolMode {
@@ -435,6 +452,9 @@ impl Default for Pool {
             sharding_key_regex: None,
             shard_id_regex: None,
             regex_search_limit: Some(1000),
+            auth_query: None,
+            auth_query_user: None,
+            auth_query_password: None,
         }
     }
 }
@@ -526,8 +546,30 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn is_auth_query_configured(&self) -> bool {
+        self.pools
+            .iter()
+            .any(|(_name, pool)| pool.is_auth_query_configured())
+    }
+
     pub fn default_path() -> String {
         String::from("pgcat.toml")
+    }
+
+    pub fn fill_up_auth_query_config(&mut self) {
+        for (_name, pool) in self.pools.iter_mut() {
+            if pool.auth_query.is_none() {
+                pool.auth_query = self.general.auth_query.clone();
+            }
+
+            if pool.auth_query_user.is_none() {
+                pool.auth_query_user = self.general.auth_query_user.clone();
+            }
+
+            if pool.auth_query_password.is_none() {
+                pool.auth_query_password = self.general.auth_query_password.clone();
+            }
+        }
     }
 }
 
@@ -735,6 +777,26 @@ impl Config {
     }
 
     pub fn validate(&mut self) -> Result<(), Error> {
+        // Validation for auth_query feature
+        if self.general.auth_query.is_some()
+            && (self.general.auth_query_user.is_none()
+                || self.general.auth_query_password.is_none())
+        {
+            error!("If auth_query is specified, you need to provide a value for `auth_query_user`, `auth_query_password`");
+            return Err(Error::BadConfig);
+        }
+
+        if self.general.auth_query.is_none() {
+            for (_name, pool) in self.pools.iter() {
+                for (_name, user_data) in pool.users.iter() {
+                    if user_data.password.is_none() {
+                        error!("You have to specify a user password for every pool if auth_query is not specified");
+                        return Err(Error::BadConfig);
+                    }
+                }
+            }
+        }
+
         // Validate TLS!
         match self.general.tls_certificate.clone() {
             Some(tls_certificate) => {
@@ -808,6 +870,7 @@ pub async fn parse(path: &str) -> Result<(), Error> {
         }
     };
 
+    config.fill_up_auth_query_config();
     config.validate()?;
 
     config.path = path.to_string();
@@ -828,6 +891,13 @@ pub async fn reload_config(client_server_map: ClientServerMap) -> Result<bool, E
         }
     };
     let new_config = get_config();
+
+    if old_config.is_auth_query_configured() && !new_config.is_auth_query_configured() {
+        // We should clean up auth_hashes so new client connections
+        // dont use old hashes.
+        info!("Auth query support deactivated. Deleting old auth hashes.");
+        drop_auth_hashes()
+    }
 
     if old_config.pools != new_config.pools {
         info!("Pool configuration changed");
@@ -876,7 +946,10 @@ mod test {
             "sharding_user"
         );
         assert_eq!(
-            get_config().pools["sharded_db"].users["1"].password,
+            get_config().pools["sharded_db"].users["1"]
+                .password
+                .as_ref()
+                .unwrap(),
             "other_user"
         );
         assert_eq!(get_config().pools["sharded_db"].users["1"].pool_size, 21);
@@ -901,10 +974,29 @@ mod test {
             "simple_user"
         );
         assert_eq!(
-            get_config().pools["simple_db"].users["0"].password,
+            get_config().pools["simple_db"].users["0"]
+                .password
+                .as_ref()
+                .unwrap(),
             "simple_user"
         );
         assert_eq!(get_config().pools["simple_db"].users["0"].pool_size, 5);
+        assert_eq!(get_config().general.auth_query, None);
+        assert_eq!(get_config().general.auth_query_user, None);
+        assert_eq!(get_config().general.auth_query_password, None);
+    }
+
+    #[tokio::test]
+    async fn test_auth_query_and_passwords() {
+        let result =
+            parse("resources/tests/pgcat-invalid-password-empty-without-auth-query.toml").await;
+        assert!(matches!(result.err().unwrap(), Error::BadConfig));
+
+        let result = parse("resources/tests/pgcat-valid-password-empty-with-auth-query.toml").await;
+        assert!(result.is_ok());
+
+        let result = parse("resources/tests/pgcat-invalid-auth-query-spec.toml").await;
+        assert!(matches!(result.err().unwrap(), Error::BadConfig));
     }
 
     #[tokio::test]

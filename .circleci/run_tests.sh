@@ -14,11 +14,17 @@ function start_pgcat() {
     sleep 1
 }
 
+# Executes an sql file in every postgres server set up in tests
+# exec_in_servers user file
+function exec_in_servers() {
+    PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 5432 -U $1 -f $2
+    PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 7432 -U $1 -f $2
+    PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 8432 -U $1 -f $2
+    PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 9432 -U $1 -f $2
+}
+
 # Setup the database with shards and user
-PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 5432 -U postgres -f tests/sharding/query_routing_setup.sql
-PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 7432 -U postgres -f tests/sharding/query_routing_setup.sql
-PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 8432 -U postgres -f tests/sharding/query_routing_setup.sql
-PGPASSWORD=postgres psql -e -h 127.0.0.1 -p 9432 -U postgres -f tests/sharding/query_routing_setup.sql
+PGPASSWORD=postgres exec_in_servers postgres tests/sharding/query_routing_setup.sql
 
 PGPASSWORD=sharding_user pgbench -h 127.0.0.1 -U sharding_user shard0 -i
 PGPASSWORD=sharding_user pgbench -h 127.0.0.1 -U sharding_user shard1 -i
@@ -34,10 +40,14 @@ toxiproxy-cli create -l 127.0.0.1:5433 -u 127.0.0.1:5432 postgres_replica
 start_pgcat "info"
 
 # Check that prometheus is running
-curl --fail localhost:9930/metrics
+#curl --fail localhost:9930/metrics
 
 export PGPASSWORD=sharding_user
 export PGDATABASE=sharded_db
+
+# Query auth test
+echo 'THIS IS A TEST'
+source .circleci/query_auth_test.sh
 
 # pgbench test
 pgbench -U sharding_user -i -h 127.0.0.1 -p 6432
