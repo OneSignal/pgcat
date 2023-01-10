@@ -6,6 +6,7 @@ use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::Arc;
@@ -313,7 +314,7 @@ pub struct General {
     pub verify_server_certificate: bool,
 
     pub admin_username: String,
-    pub admin_password: String,
+    pub admin_password: Option<String>,
 
     #[serde(default = "General::default_validate_config")]
     pub validate_config: bool,
@@ -444,7 +445,7 @@ impl Default for General {
             server_tls: false,
             verify_server_certificate: false,
             admin_username: String::from("admin"),
-            admin_password: String::from("admin"),
+            admin_password: Some(String::from("admin")),
             auth_query: None,
             auth_query_user: None,
             auth_query_password: None,
@@ -878,6 +879,16 @@ impl Config {
             }
         }
     }
+
+    pub fn overwrite_passwords(&mut self) {
+        if let Ok(val) = env::var("PGCAT_ADMIN_PASSWORD") {
+            self.general.admin_password = Some(val);
+        }
+
+        if let Ok(val) = env::var("PGCAT_AUTH_QUERY_PASSWORD") {
+            self.general.auth_query_password = Some(val);
+        }
+    }
 }
 
 impl Default for Config {
@@ -1298,6 +1309,7 @@ pub async fn parse(path: &str) -> Result<(), Error> {
         }
     };
 
+    config.overwrite_passwords();
     config.fill_up_auth_query_config();
     config.validate()?;
 
@@ -1411,6 +1423,19 @@ mod test {
         assert_eq!(get_config().general.auth_query, None);
         assert_eq!(get_config().general.auth_query_user, None);
         assert_eq!(get_config().general.auth_query_password, None);
+    }
+
+    #[tokio::test]
+    async fn test_auth_query_and_passwords() {
+        let result =
+            parse("resources/tests/pgcat-invalid-password-empty-without-auth-query.toml").await;
+        assert!(matches!(result.err().unwrap(), Error::BadConfig));
+
+        let result = parse("resources/tests/pgcat-valid-password-empty-with-auth-query.toml").await;
+        assert!(result.is_ok());
+
+        let result = parse("resources/tests/pgcat-invalid-auth-query-spec.toml").await;
+        assert!(matches!(result.err().unwrap(), Error::BadConfig));
     }
 
     #[tokio::test]

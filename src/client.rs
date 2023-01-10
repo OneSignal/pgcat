@@ -508,7 +508,7 @@ where
             // Compare server and client hashes.
             let password_hash = md5_hash_password(
                 &config.general.admin_username,
-                &config.general.admin_password,
+                &config.general.admin_password.unwrap(),
                 &salt,
             );
 
