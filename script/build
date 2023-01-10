@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+# Purpose:
+#
+# Builds the docker images.
+
+set -e
+[ -z "${DEBUG}" ] || set -x
+
+SHA=$(git rev-parse HEAD || '')
+IMAGE=europe-west4-docker.pkg.dev/core-infra-onesignal/onesignal/pgcat
+
+cd "$(dirname "$0")/.."
+
+# parse the option parameters
+for i in "$@"; do
+  case $i in
+    no-cache)
+      NO_CACHE="--no-cache"
+      shift
+    ;;
+  esac
+done
+
+docker build --target release $NO_CACHE . -t $IMAGE:$SHA -f docker/Dockerfile
