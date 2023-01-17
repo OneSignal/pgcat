@@ -586,6 +586,10 @@ impl Server {
     /// Server & client are out of sync, we must discard this connection.
     /// This happens with clients that misbehave.
     pub fn is_bad(&self) -> bool {
+        if self.bad {
+            return self.bad;
+        };
+
         if let Some(cached_resolver) = CACHED_RESOLVER.load().as_ref() {
             if let Some(addr_set) = &self.addr_set {
                 return cached_resolver
@@ -593,7 +597,7 @@ impl Server {
                     .has_changed(self.address.host.as_str(), addr_set);
             }
         }
-        self.bad
+        false
     }
 
     /// Get server startup information to forward it to the client.
