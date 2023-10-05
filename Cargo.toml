@@ -8,7 +8,7 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 md-5 = "0.10"
-bb8 = "0.8.1"
+bb8 = { git = "https://github.com/postgresml/bb8", rev = "6971f9565dac43de9f608a9d9379c19507f56c00" }
 async-trait = "0.1"
 rand = "0.8"
 chrono = "0.4"
@@ -51,4 +51,3 @@ tracing-subscriber = { version = "0.3.17", features = ["json", "env-filter", "st
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemallocator = "0.5.0"
-
