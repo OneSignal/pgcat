@@ -169,8 +169,9 @@ checksum = "604178f6c5c21f02dc555784810edfb88d34ac2c73b2eae109655649ee73ce3d"
 
 [[package]]
 name = "bb8"
-version = "0.8.1"
-source = "git+https://github.com/postgresml/bb8?rev=6971f9565dac43de9f608a9d9379c19507f56c00#6971f9565dac43de9f608a9d9379c19507f56c00"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df7c2093d15d6a1d33b1f972e1c5ea3177748742b97a5f392aa83a65262c6780"
 dependencies = [
  "async-trait",
  "futures-channel",
