@@ -1,4 +1,4 @@
-use crate::pool::BanReason;
+use crate::ban_service::BanReason;
 use crate::server::ServerParameters;
 use crate::stats::pool::PoolStats;
 use bytes::{Buf, BufMut, BytesMut};
@@ -357,7 +357,7 @@ where
             for server in 0..pool.servers(shard) {
                 let address = pool.address(shard, server);
                 let pool_state = pool.pool_state(shard, server);
-                let banned = pool.is_banned(address);
+                let banned = pool.ban_service.is_banned(address);
                 let paused = pool.paused();
 
                 res.put(data_row(&vec![
@@ -440,8 +440,9 @@ where
 
     for (id, pool) in get_all_pools().iter() {
         for address in pool.get_addresses_from_host(host) {
-            if !pool.is_banned(&address) {
-                pool.ban(&address, BanReason::AdminBan(duration_seconds), None);
+            if !pool.ban_service.is_banned(&address) {
+                pool.ban_service
+                    .ban(&address, BanReason::AdminBan(duration_seconds), None);
                 res.put(data_row(&vec![
                     id.db.clone(),
                     id.user.clone(),
@@ -483,8 +484,8 @@ where
 
     for (id, pool) in get_all_pools().iter() {
         for address in pool.get_addresses_from_host(host) {
-            if pool.is_banned(&address) {
-                pool.unban(&address);
+            if pool.ban_service.is_banned(&address) {
+                pool.ban_service.unban(&address);
                 res.put(data_row(&vec![
                     id.db.clone(),
                     id.user.clone(),
@@ -530,10 +531,10 @@ where
         .as_secs() as i64;
 
     for (id, pool) in get_all_pools().iter() {
-        for (address, (ban_reason, ban_time)) in pool.get_bans().iter() {
+        for (address, (ban_reason, ban_time)) in pool.ban_service.get_bans().iter() {
             let ban_duration = match ban_reason {
                 BanReason::AdminBan(duration) => *duration,
-                _ => pool.settings.ban_time,
+                _ => pool.ban_service.ban_time,
             };
             let remaining = ban_duration - (now - ban_time.timestamp());
             if remaining <= 0 {

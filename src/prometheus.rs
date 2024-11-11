@@ -466,7 +466,14 @@ fn push_server_stats(lines: &mut Vec<String>) {
                         ("active_count", server_info.active_count),
                         ("login_count", server_info.login_count),
                         ("tested_count", server_info.tested_count),
-                        ("is_banned", if pool.is_banned(address) { 1 } else { 0 }),
+                        (
+                            "is_banned",
+                            if pool.ban_service.is_banned(address) {
+                                1
+                            } else {
+                                0
+                            },
+                        ),
                         ("is_paused", if pool.paused() { 1 } else { 0 }),
                     ];
                     for (key, value) in metrics {

@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod auth_passthrough;
+pub mod ban_service;
 pub mod client;
 pub mod cmd_args;
 pub mod config;

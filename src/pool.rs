@@ -1,7 +1,6 @@
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bb8::{ManageConnection, Pool, PooledConnection, QueueStrategy};
-use chrono::naive::NaiveDateTime;
 use log::{debug, error, info, warn};
 use lru::LruCache;
 use once_cell::sync::Lazy;
@@ -26,6 +25,7 @@ use crate::config::{
 use crate::errors::Error;
 
 use crate::auth_passthrough::AuthPassthrough;
+use crate::ban_service::{BanReason, BanService, UnbanReason};
 use crate::messages::Parse;
 use crate::plugins::prewarmer;
 use crate::server::{Server, ServerParameters};
@@ -37,7 +37,6 @@ pub type SecretKey = i32;
 pub type ServerHost = String;
 pub type ServerPort = u16;
 
-pub type BanList = Arc<RwLock<Vec<HashMap<Address, (BanReason, NaiveDateTime)>>>>;
 pub type ClientServerMap =
     Arc<Mutex<HashMap<(ProcessId, SecretKey), (ProcessId, SecretKey, ServerHost, ServerPort)>>>;
 pub type PoolMap = HashMap<PoolIdentifier, ConnectionPool>;
@@ -45,17 +44,6 @@ pub type PoolMap = HashMap<PoolIdentifier, ConnectionPool>;
 /// This is atomic and safe and read-optimized.
 /// The pool is recreated dynamically when the config is reloaded.
 pub static POOLS: Lazy<ArcSwap<PoolMap>> = Lazy::new(|| ArcSwap::from_pointee(HashMap::default()));
-
-// Reasons for banning a server.
-#[derive(Debug, PartialEq, Clone)]
-pub enum BanReason {
-    FailedHealthCheck,
-    MessageSendFailed,
-    MessageReceiveFailed,
-    FailedCheckout,
-    StatementTimeout,
-    AdminBan(i64),
-}
 
 pub type PreparedStatementCacheType = Arc<Mutex<PreparedStatementCache>>;
 
@@ -162,9 +150,6 @@ pub struct PoolSettings {
     // Default server role to connect to.
     pub default_role: Option<Role>,
 
-    // Whether or not we should use primary when replicas are unavailable
-    pub replica_to_primary_failover_enabled: bool,
-
     // Enable/disable query parser.
     pub query_parser_enabled: bool,
 
@@ -188,9 +173,6 @@ pub struct PoolSettings {
 
     // Health check delay
     pub healthcheck_delay: u64,
-
-    // Ban time
-    pub ban_time: i64,
 
     // Regex for searching for the sharding key in SQL statements
     pub sharding_key_regex: Option<Regex>,
@@ -222,7 +204,6 @@ impl Default for PoolSettings {
             user: User::default(),
             db: String::default(),
             default_role: None,
-            replica_to_primary_failover_enabled: false,
             query_parser_enabled: false,
             query_parser_max_length: None,
             query_parser_read_write_splitting: false,
@@ -231,7 +212,6 @@ impl Default for PoolSettings {
             automatic_sharding_key: None,
             healthcheck_delay: General::default_healthcheck_delay(),
             healthcheck_timeout: General::default_healthcheck_timeout(),
-            ban_time: General::default_ban_time(),
             sharding_key_regex: None,
             shard_id_regex: None,
             regex_search_limit: 1000,
@@ -254,9 +234,9 @@ pub struct ConnectionPool {
     /// failover and load balancing deterministically.
     addresses: Arc<Vec<Vec<Address>>>,
 
-    /// List of banned addresses (see above)
-    /// that should not be queried.
-    banlist: BanList,
+    /// An instance of a struct that handles the
+    /// banning/unbanning of addresses.
+    pub ban_service: Arc<BanService>,
 
     /// The server information has to be passed to the
     /// clients on startup. We pre-connect to all shards and replicas
@@ -322,7 +302,6 @@ impl ConnectionPool {
 
                 let mut shards = Vec::new();
                 let mut addresses = Vec::new();
-                let mut banlist = Vec::new();
                 let mut shard_ids = pool_config
                     .shards
                     .clone()
@@ -501,7 +480,6 @@ impl ConnectionPool {
 
                     shards.push(pools);
                     addresses.push(servers);
-                    banlist.push(HashMap::new());
                 }
 
                 assert_eq!(shards.len(), addresses.len());
@@ -515,7 +493,10 @@ impl ConnectionPool {
                 let pool = ConnectionPool {
                     databases: Arc::new(shards),
                     addresses: Arc::new(addresses),
-                    banlist: Arc::new(RwLock::new(banlist)),
+                    ban_service: Arc::new(BanService::new(
+                        pool_config.replica_to_primary_failover_enabled,
+                        config.general.ban_time,
+                    )),
                     config_hash: new_pool_hash_value,
                     original_server_parameters: Arc::new(RwLock::new(ServerParameters::new())),
                     auth_hash: pool_auth_hash,
@@ -535,8 +516,7 @@ impl ConnectionPool {
                             "primary" => Some(Role::Primary),
                             _ => unreachable!(),
                         },
-                        replica_to_primary_failover_enabled: pool_config
-                            .replica_to_primary_failover_enabled,
+
                         query_parser_enabled: pool_config.query_parser_enabled,
                         query_parser_max_length: pool_config.query_parser_max_length,
                         query_parser_read_write_splitting: pool_config
@@ -546,7 +526,6 @@ impl ConnectionPool {
                         automatic_sharding_key: pool_config.automatic_sharding_key.clone(),
                         healthcheck_delay: config.general.healthcheck_delay,
                         healthcheck_timeout: config.general.healthcheck_timeout,
-                        ban_time: config.general.ban_time,
                         sharding_key_regex: pool_config
                             .sharding_key_regex
                             .clone()
@@ -740,7 +719,7 @@ impl ConnectionPool {
         // If the role is replica and we allow sending traffic to primary when replicas are unavailble,
         // we add primary address at the end of the list of candidates, this way it will be tried when
         // replicas are all unavailable.
-        if role == Role::Replica && self.settings.replica_to_primary_failover_enabled {
+        if role == Role::Replica && self.ban_service.replica_to_primary_failover_enabled {
             let mut primaries = self
                 .addresses
                 .iter()
@@ -762,13 +741,23 @@ impl ConnectionPool {
             };
 
             let mut force_healthcheck = false;
-
-            if self.is_banned(address) {
-                if self.try_unban(address).await {
-                    force_healthcheck = true;
-                } else {
-                    debug!("Address {:?} is banned", address);
-                    continue;
+            if self.ban_service.is_banned(address) {
+                match self.ban_service.should_unban(&self.addresses, address) {
+                    Some(UnbanReason::AllReplicasBanned) => {
+                        self.ban_service.unban_all_replicas(address);
+                        force_healthcheck = true;
+                    }
+                    Some(UnbanReason::BanTimeExceeded) => {
+                        self.ban_service.unban(address);
+                        force_healthcheck = true;
+                    }
+                    Some(UnbanReason::PrimaryBanned) | Some(UnbanReason::NotBanned) => {
+                        force_healthcheck = true;
+                    }
+                    None => {
+                        debug!("Address {:?} is banned", address);
+                        continue;
+                    }
                 }
             }
 
@@ -786,7 +775,8 @@ impl ConnectionPool {
                         "Connection checkout error for instance {:?}, error: {:?}",
                         address, err
                     );
-                    self.ban(address, BanReason::FailedCheckout, Some(client_stats));
+                    self.ban_service
+                        .ban(address, BanReason::FailedCheckout, Some(client_stats));
                     address.stats.error();
                     client_stats.checkout_error();
                     continue;
@@ -888,139 +878,14 @@ impl ConnectionPool {
         // Don't leave a bad connection in the pool.
         server.mark_bad("failed health check");
 
-        self.ban(address, BanReason::FailedHealthCheck, Some(client_info));
+        self.ban_service
+            .ban(address, BanReason::FailedHealthCheck, Some(client_info));
         false
-    }
-
-    /// Ban an address (i.e. replica). It no longer will serve
-    /// traffic for any new transactions. Existing transactions on that replica
-    /// will finish successfully or error out to the clients.
-    pub fn ban(&self, address: &Address, reason: BanReason, client_info: Option<&ClientStats>) {
-        // Count the number of errors since the last successful checkout
-        // This is used to determine if the shard is down
-        match reason {
-            BanReason::FailedHealthCheck
-            | BanReason::FailedCheckout
-            | BanReason::MessageSendFailed
-            | BanReason::MessageReceiveFailed => {
-                address.increment_error_count();
-            }
-            _ => (),
-        };
-
-        // Primary can never be banned
-        if address.role == Role::Primary {
-            return;
-        }
-
-        error!("Banning instance {:?}, reason: {:?}", address, reason);
-
-        let now = chrono::offset::Utc::now().naive_utc();
-        let mut guard = self.banlist.write();
-
-        if let Some(client_info) = client_info {
-            client_info.ban_error();
-            address.stats.error();
-        }
-
-        guard[address.shard].insert(address.clone(), (reason, now));
-    }
-
-    /// Clear the replica to receive traffic again. Takes effect immediately
-    /// for all new transactions.
-    pub fn unban(&self, address: &Address) {
-        let mut guard = self.banlist.write();
-        guard[address.shard].remove(address);
-    }
-
-    /// Check if address is banned
-    /// true if banned, false otherwise
-    pub fn is_banned(&self, address: &Address) -> bool {
-        let guard = self.banlist.read();
-
-        match guard[address.shard].get(address) {
-            Some(_) => true,
-            None => {
-                debug!("{:?} is ok", address);
-                false
-            }
-        }
-    }
-
-    /// Determines trying to unban this server was successful
-    pub async fn try_unban(&self, address: &Address) -> bool {
-        // If somehow primary ends up being banned we should return true here
-        if address.role == Role::Primary {
-            return true;
-        }
-
-        // If we have replica to primary failover we should not unban replicas
-        // as we still have the primary to server traffic.
-        if !self.settings.replica_to_primary_failover_enabled {
-            // Check if all replicas are banned, in that case unban all of them
-            let replicas_available = self.addresses[address.shard]
-                .iter()
-                .filter(|addr| addr.role == Role::Replica)
-                .count();
-
-            debug!("Available targets: {}", replicas_available);
-
-            let read_guard = self.banlist.read();
-            let all_replicas_banned = read_guard[address.shard].len() == replicas_available;
-            drop(read_guard);
-
-            if all_replicas_banned {
-                let mut write_guard = self.banlist.write();
-                warn!("Unbanning all replicas.");
-                write_guard[address.shard].clear();
-
-                return true;
-            }
-        }
-
-        // Check if ban time is expired
-        let read_guard = self.banlist.read();
-        let exceeded_ban_time = match read_guard[address.shard].get(address) {
-            Some((ban_reason, timestamp)) => {
-                let now = chrono::offset::Utc::now().naive_utc();
-                match ban_reason {
-                    BanReason::AdminBan(duration) => {
-                        now.timestamp() - timestamp.timestamp() > *duration
-                    }
-                    _ => now.timestamp() - timestamp.timestamp() > self.settings.ban_time,
-                }
-            }
-            None => return true,
-        };
-        drop(read_guard);
-
-        if exceeded_ban_time {
-            warn!("Unbanning {:?}", address);
-            let mut write_guard = self.banlist.write();
-            write_guard[address.shard].remove(address);
-            drop(write_guard);
-
-            true
-        } else {
-            debug!("{:?} is banned", address);
-            false
-        }
     }
 
     /// Get the number of configured shards.
     pub fn shards(&self) -> usize {
         self.databases.len()
-    }
-
-    pub fn get_bans(&self) -> Vec<(Address, (BanReason, NaiveDateTime))> {
-        let mut bans: Vec<(Address, (BanReason, NaiveDateTime))> = Vec::new();
-        let guard = self.banlist.read();
-        for banlist in guard.iter() {
-            for (address, (reason, timestamp)) in banlist.iter() {
-                bans.push((address.clone(), (reason.clone(), *timestamp)));
-            }
-        }
-        bans
     }
 
     /// Get the address from the host url

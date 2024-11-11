@@ -1,5 +1,5 @@
+use crate::ban_service::BanReason;
 use crate::errors::{ClientIdentifier, Error};
-use crate::pool::BanReason;
 /// Handle clients by pretending to be a PostgreSQL server.
 use bytes::{Buf, BufMut, BytesMut};
 use log::{debug, error, info, trace, warn};
@@ -1773,7 +1773,8 @@ where
                 // Don't ban for this.
                 Error::PreparedStatementError => (),
                 _ => {
-                    pool.ban(address, BanReason::MessageSendFailed, Some(&self.stats));
+                    pool.ban_service
+                        .ban(address, BanReason::MessageSendFailed, Some(&self.stats));
                 }
             };
 
@@ -2014,7 +2015,8 @@ where
         match server.send(message).await {
             Ok(_) => Ok(()),
             Err(err) => {
-                pool.ban(address, BanReason::MessageSendFailed, Some(&self.stats));
+                pool.ban_service
+                    .ban(address, BanReason::MessageSendFailed, Some(&self.stats));
                 Err(err)
             }
         }
@@ -2041,7 +2043,11 @@ where
             Ok(result) => match result {
                 Ok(message) => Ok(message),
                 Err(err) => {
-                    pool.ban(address, BanReason::MessageReceiveFailed, Some(client_stats));
+                    pool.ban_service.ban(
+                        address,
+                        BanReason::MessageReceiveFailed,
+                        Some(client_stats),
+                    );
                     error_response_terminal(
                         &mut self.write,
                         &format!("error receiving data from server: {:?}", err),
@@ -2058,7 +2064,8 @@ where
                     )
                     .as_str(),
                 );
-                pool.ban(address, BanReason::StatementTimeout, Some(client_stats));
+                pool.ban_service
+                    .ban(address, BanReason::StatementTimeout, Some(client_stats));
                 error_response_terminal(&mut self.write, "pool statement timeout").await?;
                 Err(Error::StatementTimeout)
             }
