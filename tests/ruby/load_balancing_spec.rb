@@ -165,7 +165,7 @@ end
 
 describe "Candidate filtering based on `default_pool`" do
   let(:processes) {
-    Helpers::Pgcat.single_shard_setup("sharded_db", 5, "transaction", "random", "debug", pool_settings)
+    Helpers::Pgcat.single_shard_setup("sharded_db", 5, "transaction", "random", "debug", pool_settings, general_settings)
   }
 
   after do
@@ -175,12 +175,16 @@ describe "Candidate filtering based on `default_pool`" do
 
   context("with default_pool set to replicas") do
     context("when all replicas are down ") do
+      let(:ban_time) { 60 }
+      let(:connect_timeout) { 1000 }
       let(:pool_settings) do
         {
           "default_role" => "replica",
-          "replica_to_primary_failover_enabled" => replica_to_primary_failover_enabled
+          "replica_to_primary_failover_enabled" => replica_to_primary_failover_enabled,
+          "connect_timeout" => connect_timeout,
         }
       end
+      let(:general_settings) { { "ban_time" => ban_time } }
 
       context("with `replica_to_primary_failover_enabled` set to false`") do
         let(:replica_to_primary_failover_enabled) { false }
@@ -248,6 +252,49 @@ describe "Candidate filtering based on `default_pool`" do
           end
 
           expect(failed_count).to(eq(number_of_replicas))
+        end
+        context("when banned replicas are tested for availability because they expired the ban time") do
+          let(:ban_time) { 2 }
+          it "should be done in the background without interfering with traffic" do
+            select_server_port = "SELECT setting AS port FROM pg_settings WHERE name = 'port';"
+            conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+            primary_port = processes.primary.original_port;
+
+            response = conn.async_exec(select_server_port)
+            expect(response[0]["port"].to_i).not_to(eq(primary_port))
+
+            failed_count = 0
+            number_of_replicas = processes[:replicas].length
+
+            # Take down all replicas
+            processes[:replicas].each(&:take_down)
+
+            (number_of_replicas).times do |n|
+              response = conn.async_exec(select_server_port)
+              expect(response[0]["port"].to_i).to(eq(primary_port))
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(failed_count).to(eq(number_of_replicas))
+            failed_count = 0
+
+            response = conn.async_exec(select_server_port)
+            expect(response[0]["port"].to_i).to(eq(primary_port))
+            sleep(ban_time + 1)
+
+            begin
+              time_before_query = Time.now
+              response = conn.async_exec(select_server_port)
+              expect(response[0]["port"].to_i).to(eq(primary_port))
+              expect(Time.now - time_before_query).to(be < connect_timeout / 1000.0)
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(response[0]["port"].to_i).to(eq(primary_port))
+            expect(failed_count).to(eq(0))
+          end
         end
       end
     end

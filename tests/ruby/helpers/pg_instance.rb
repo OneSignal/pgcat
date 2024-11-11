@@ -6,6 +6,7 @@ class PgInstance
   attr_reader :username
   attr_reader :password
   attr_reader :database_name
+  attr_reader :original_port
 
   def self.mass_takedown(databases)
     raise StandardError "block missing" unless block_given?
