@@ -4,12 +4,20 @@ use log::{debug, error, warn};
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::config::{Address, Role};
+use crate::pool::ServerPool;
+use bb8::Pool;
+
 pub type BanList = Arc<RwLock<Vec<HashMap<Address, (BanReason, NaiveDateTime)>>>>;
 #[derive(Debug, Clone, Default)]
 pub struct BanService {
+    /// A set of addresses that are being unbanned.
+    /// This is used to prevent multiple unbanning tasks
+    /// and to prevent interfiere with normal traffic, when unbanning due to ban_time expired.
+    addresses_being_unbanned: Arc<RwLock<HashSet<Address>>>,
+
     /// List of banned addresses (see above)
     /// that should not be queried.
     banlist: BanList,
@@ -40,9 +48,14 @@ pub enum UnbanReason {
 }
 
 impl BanService {
-    pub fn new(replica_to_primary_failover_enabled: bool, ban_time: i64) -> Self {
+    pub fn new(
+        number_of_shards: usize,
+        replica_to_primary_failover_enabled: bool,
+        ban_time: i64,
+    ) -> Self {
         BanService {
-            banlist: Arc::new(RwLock::new(vec![HashMap::new()])),
+            addresses_being_unbanned: Arc::new(RwLock::new(HashSet::new())),
+            banlist: Arc::new(RwLock::new(vec![HashMap::new(); number_of_shards])),
             replica_to_primary_failover_enabled,
             ban_time,
         }
@@ -87,6 +100,52 @@ impl BanService {
         warn!("Unbanning {:?}", address);
         let mut guard = self.banlist.write();
         guard[address.shard].remove(address);
+    }
+
+    /// Starts a tokio::task that will try to connect to the server and
+    /// if successful, it will unban the server.
+    pub fn schedule_unban(
+        &self,
+        address: &Address,
+        server_pool: &Pool<ServerPool>,
+        client_stats: ClientStats,
+    ) {
+        // If the address is in the backlog, then it means that
+        // a healthcheck is being performed and we should do nothing.
+        if self.addresses_being_unbanned.read().contains(address) {
+            return;
+        } else {
+            self.addresses_being_unbanned
+                .write()
+                .insert(address.clone());
+        }
+
+        tokio::spawn({
+            let server_pool = server_pool.clone();
+            let address = address.clone();
+            let banlist = self.banlist.clone();
+            let addresses_being_unbanned = self.addresses_being_unbanned.clone();
+
+            async move {
+                match server_pool.get().await {
+                    Ok(_) => {
+                        address.reset_error_count();
+                        warn!("Unbanning {:?}", address);
+                        let mut guard = banlist.write();
+                        guard[address.shard].remove(&address);
+                    }
+                    Err(err) => {
+                        error!(
+                            "Connection checkout error while trying to unban instance {:?}, error: {:?}",
+                            address, err
+                        );
+                        address.stats.error();
+                        client_stats.checkout_error();
+                    }
+                };
+                addresses_being_unbanned.write().remove(&address);
+            }
+        });
     }
 
     /// Check if address is banned

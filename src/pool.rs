@@ -489,11 +489,12 @@ impl ConnectionPool {
                         pool_name, user.username
                     );
                 }
-
+                let number_of_shards = shards.len();
                 let pool = ConnectionPool {
                     databases: Arc::new(shards),
                     addresses: Arc::new(addresses),
                     ban_service: Arc::new(BanService::new(
+                        number_of_shards,
                         pool_config.replica_to_primary_failover_enabled,
                         config.general.ban_time,
                     )),
@@ -748,8 +749,12 @@ impl ConnectionPool {
                         force_healthcheck = true;
                     }
                     Some(UnbanReason::BanTimeExceeded) => {
-                        self.ban_service.unban(address);
-                        force_healthcheck = true;
+                        self.ban_service.schedule_unban(
+                            address,
+                            &self.databases[address.shard][address.address_index],
+                            client_stats.clone(),
+                        );
+                        continue;
                     }
                     Some(UnbanReason::PrimaryBanned) | Some(UnbanReason::NotBanned) => {
                         force_healthcheck = true;
