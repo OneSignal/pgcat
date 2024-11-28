@@ -253,6 +253,7 @@ describe "Candidate filtering based on `default_pool`" do
 
           expect(failed_count).to(eq(number_of_replicas))
         end
+
         context("when banned replicas are tested for availability because they expired the ban time") do
           let(:ban_time) { 2 }
           it "should be done in the background without interfering with traffic" do
@@ -265,6 +266,16 @@ describe "Candidate filtering based on `default_pool`" do
 
             failed_count = 0
             number_of_replicas = processes[:replicas].length
+
+            # We need to allow pgcat to open connections to replicas
+            (number_of_replicas + 10).times do |n|
+              response = conn.async_exec(select_server_port)
+              expect(response[0]["port"].to_i).not_to(eq(primary_port))
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(failed_count).to(eq(0))
 
             # Take down all replicas
             processes[:replicas].each(&:take_down)
@@ -293,6 +304,49 @@ describe "Candidate filtering based on `default_pool`" do
               failed_count += 1
             end
             expect(response[0]["port"].to_i).to(eq(primary_port))
+            expect(failed_count).to(eq(0))
+          end
+
+          it "should unban replicas if they become available after the ban time" do
+            select_server_port = "SELECT setting AS port FROM pg_settings WHERE name = 'port';"
+            conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+            failed_count = 0
+            primary_port = processes.primary.original_port;
+
+            number_of_replicas = processes[:replicas].length
+
+            # We need to allow pgcat to open connections to replicas
+            (number_of_replicas + 10).times do |n|
+              response = conn.async_exec(select_server_port)
+              expect(response[0]["port"].to_i).not_to(eq(primary_port))
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(failed_count).to(eq(0))
+
+            # Take down all replicas
+            processes[:replicas].each(&:take_down)
+
+            (number_of_replicas).times do |n|
+              conn.async_exec("SELECT 1 + 2")
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(failed_count).to(eq(number_of_replicas))
+            failed_count = 0
+
+            processes[:replicas].each(&:reset)
+            sleep(ban_time + 1)
+            response = nil
+            number_of_replicas.times do
+              response = conn.async_exec("SELECT 1 + 2")
+            rescue
+              conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              failed_count += 1
+            end
+            expect(response[0]["port"].to_i).not_to(eq(primary_port))
             expect(failed_count).to(eq(0))
           end
         end
