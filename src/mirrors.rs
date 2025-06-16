@@ -70,6 +70,10 @@ impl MirroredClient {
                             err,
                             address.clone()
                         );
+                        if self.disconnect_rx.try_recv().is_err() {
+                            info!("Got mirror exit signal, exiting {:?}", address.clone());
+                            break;
+                        }
                         continue;
                     }
                 };
