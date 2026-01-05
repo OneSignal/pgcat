@@ -759,7 +759,7 @@ where
 
         trace!("Startup OK");
         let stats = Arc::new(ClientStats::new(
-            process_id,
+            secret_key,
             application_name,
             username,
             pool_name,
