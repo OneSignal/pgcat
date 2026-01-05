@@ -17,14 +17,14 @@ use crate::auth_passthrough::refetch_auth_hash;
 use crate::config::{
     get_config, get_idle_client_in_transaction_timeout, Address, AuthType, PoolMode,
 };
-use crate::constants::*;
-use crate::messages::*;
 use crate::plugins::PluginOutput;
 use crate::pool::{get_pool, ClientServerMap, ConnectionPool};
 use crate::query_router::{Command, QueryRouter};
 use crate::server::{Server, ServerParameters};
 use crate::stats::{ClientStats, ServerStats};
 use crate::tls::Tls;
+use crate::{constants::*, i32_to_ipv4, PGCAT_IP};
+use crate::{ipv4_to_i32, messages::*};
 
 use tokio_rustls::server::TlsStream;
 
@@ -480,7 +480,12 @@ where
         }
 
         // Generate random backend ID and secret key
-        let process_id: i32 = rand::random();
+        let process_id = match *PGCAT_IP {
+            // Override the process ID with the pgcat IP so that cancelation queries can be
+            // forwarded back to this pgcat instance if they end up being received on another pgcat instance.
+            Some(pgcat_ip) => ipv4_to_i32(pgcat_ip),
+            None => rand::random(),
+        };
         let secret_key: i32 = rand::random();
 
         let mut prepared_statements_enabled = false;
@@ -754,7 +759,7 @@ where
 
         trace!("Startup OK");
         let stats = Arc::new(ClientStats::new(
-            process_id,
+            secret_key,
             application_name,
             username,
             pool_name,
@@ -832,6 +837,23 @@ where
         if self.cancel_mode {
             trace!("Sending CancelRequest");
 
+            if let Some(pgcat_ip) = *PGCAT_IP {
+                let destination_ip = i32_to_ipv4(self.process_id);
+                if destination_ip != pgcat_ip {
+                    // This cancel query is not meant for us. Forward it to the correct pgcat instance.
+                    // This assumes that all pgcat nodes are listening on the same port.
+                    let port = get_config().general.port;
+                    info!("Forwarding cancel request to {}:{}", destination_ip, port);
+                    return Server::cancel(
+                        &destination_ip.to_string(),
+                        port,
+                        self.process_id,
+                        self.secret_key,
+                    )
+                    .await;
+                }
+            }
+
             let (process_id, secret_key, address, port) = {
                 let guard = self.client_server_map.lock();
 
@@ -845,7 +867,10 @@ where
 
                     // The client doesn't know / got the wrong server,
                     // we're closing the connection for security reasons.
-                    None => return Ok(()),
+                    None => {
+                        error!("An unknown cancel query was received and ignored. Was it sent to the wrong server?");
+                        return Ok(());
+                    }
                 }
             };
 
