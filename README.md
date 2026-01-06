@@ -278,6 +278,20 @@ The config can be reloaded by sending a `kill -s SIGHUP` to the process or by qu
 
 Mirroring allows to route queries to multiple databases at the same time. This is useful for prewarning replicas before placing them into the active configuration, or for testing different versions of Postgres with live traffic.
 
+### Load balancing aware query cancellation
+
+If multiple pgcat instances are running behind a load balancer,
+query cancellation requests may be routed to the wrong pgcat instance
+by the load balancer and silently dropped.
+
+To address this, pgcat supports including its own IP address
+in the cancellation request secret. This is enabled by setting
+`PGCAT_IP` environment variable to the IP address of the pgcat instance.
+
+A pgcat pod with `PGCAT_IP` set will only accept cancellation requests
+that include its own IP address in the secret. Otherwise, it will forward the cancellation
+request to the IP address included in the secret.
+
 ## License
 
 PgCat is free and open source, released under the MIT license.

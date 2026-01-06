@@ -868,7 +868,7 @@ where
                     // The client doesn't know / got the wrong server,
                     // we're closing the connection for security reasons.
                     None => {
-                        error!("An unknown cancel query was received and ignored. Was it sent to the wrong server?");
+                        info!("An unknown cancel query was received and ignored. Was it sent to the wrong server?");
                         return Ok(());
                     }
                 }
