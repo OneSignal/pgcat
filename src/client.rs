@@ -839,7 +839,10 @@ where
 
             if let Some(pgcat_ip) = *PGCAT_IP {
                 let destination_ip = i32_to_ipv4(self.process_id);
-                if destination_ip != pgcat_ip {
+                if !destination_ip.is_unspecified()
+                    && !destination_ip.is_loopback()
+                    && destination_ip != pgcat_ip
+                {
                     // This cancel query is not meant for us. Forward it to the correct pgcat instance.
                     // This assumes that all pgcat nodes are listening on the same port.
                     let port = get_config().general.port;
