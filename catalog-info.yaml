@@ -1,0 +1,15 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: pgcat
+  description: PostgreSQL pooler and proxy with support for sharding, load balancing, failover, and mirroring
+  annotations:
+    github.com/project-slug: 'OneSignal/pgcat'
+    circleci.com/project-slug: 'github/OneSignal/pgcat'
+    backstage.io/techdocs-ref: 'dir:.'
+  tags:
+    - lang-rust
+spec:
+  type: service
+  lifecycle: production
+  owner: eng-platform
