@@ -1114,3 +1114,90 @@ pub fn get_pool(db: &str, user: &str) -> Option<ConnectionPool> {
 pub fn get_all_pools() -> HashMap<PoolIdentifier, ConnectionPool> {
     (*(*POOLS.load())).clone()
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn new_map() -> ClientServerMap {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    // Mirrors Server::claim() inserting into the map.
+    fn claim(map: &ClientServerMap, key: (ProcessId, SecretKey), value: (ProcessId, SecretKey, ServerHost, ServerPort)) {
+        map.lock().insert(key, value);
+    }
+
+    // Mirrors the cancel-request lookup in Client::handle().
+    fn lookup(
+        map: &ClientServerMap,
+        key: &(ProcessId, SecretKey),
+    ) -> Option<(ProcessId, SecretKey, ServerHost, ServerPort)> {
+        map.lock().get(key).cloned()
+    }
+
+    // Mirrors Client::release() / Drop for Client removing from the map.
+    fn release(map: &ClientServerMap, key: &(ProcessId, SecretKey)) {
+        map.lock().remove(key);
+    }
+
+    #[test]
+    fn test_claim_lookup_release_contract() {
+        let map = new_map();
+        let key = (1, 100);
+        let value = (2, 200, "10.0.0.1".to_string(), 5432);
+
+        assert_eq!(lookup(&map, &key), None);
+
+        claim(&map, key, value.clone());
+        assert_eq!(lookup(&map, &key), Some(value));
+
+        release(&map, &key);
+        assert_eq!(lookup(&map, &key), None);
+    }
+
+    #[test]
+    fn test_claim_overwrites_existing_entry() {
+        let map = new_map();
+        let key = (1, 100);
+        let first = (2, 200, "10.0.0.1".to_string(), 5432);
+        let second = (3, 300, "10.0.0.2".to_string(), 5433);
+
+        claim(&map, key, first);
+        claim(&map, key, second.clone());
+
+        // Last write wins - matches current HashMap::insert semantics.
+        assert_eq!(lookup(&map, &key), Some(second));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_claim_lookup_release_distinct_keys() {
+        let map = new_map();
+        let task_count = 200;
+
+        let mut handles = Vec::with_capacity(task_count);
+        for i in 0..task_count as i32 {
+            let map = map.clone();
+            handles.push(tokio::spawn(async move {
+                let key = (i, i * 10);
+                let value = (i + 1, i * 10 + 1, format!("10.0.{}.1", i), 5432 + i as u16);
+
+                claim(&map, key, value.clone());
+
+                // Another task cancelling this "client" should always see
+                // a consistent, fully-written entry - never a partial one.
+                let seen = lookup(&map, &key);
+                assert_eq!(seen, Some(value));
+
+                release(&map, &key);
+                assert_eq!(lookup(&map, &key), None);
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        assert!(map.lock().is_empty());
+    }
+}
