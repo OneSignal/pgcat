@@ -858,13 +858,15 @@ where
             }
 
             let (process_id, secret_key, address, port) = {
-                let guard = self.client_server_map.lock();
-
-                match guard.get(&(self.process_id, self.secret_key)) {
-                    // Drop the mutex as soon as possible.
+                match self
+                    .client_server_map
+                    .get(&(self.process_id, self.secret_key))
+                {
+                    // Drop the guard as soon as possible.
                     // We found the server the client is using for its query
                     // that it wants to cancel.
-                    Some((process_id, secret_key, address, port)) => {
+                    Some(entry) => {
+                        let (process_id, secret_key, address, port) = entry.value();
                         (*process_id, *secret_key, address.clone(), *port)
                     }
 
@@ -1986,8 +1988,8 @@ where
 
     /// Release the server from the client: it can't cancel its queries anymore.
     pub fn release(&self) {
-        let mut guard = self.client_server_map.lock();
-        guard.remove(&(self.process_id, self.secret_key));
+        self.client_server_map
+            .remove(&(self.process_id, self.secret_key));
     }
 
     async fn send_and_receive_loop(
@@ -2111,8 +2113,8 @@ where
 
 impl<S, T> Drop for Client<S, T> {
     fn drop(&mut self) {
-        let mut guard = self.client_server_map.lock();
-        guard.remove(&(self.process_id, self.secret_key));
+        self.client_server_map
+            .remove(&(self.process_id, self.secret_key));
 
         // Dirty shutdown
         // TODO: refactor, this is not the best way to handle state management.

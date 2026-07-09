@@ -1,6 +1,7 @@
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bb8::{ManageConnection, Pool, PooledConnection, QueueStrategy};
+use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use lru::LruCache;
 use once_cell::sync::Lazy;
@@ -38,7 +39,7 @@ pub type ServerHost = String;
 pub type ServerPort = u16;
 
 pub type ClientServerMap =
-    Arc<Mutex<HashMap<(ProcessId, SecretKey), (ProcessId, SecretKey, ServerHost, ServerPort)>>>;
+    Arc<DashMap<(ProcessId, SecretKey), (ProcessId, SecretKey, ServerHost, ServerPort)>>;
 pub type PoolMap = HashMap<PoolIdentifier, ConnectionPool>;
 /// The connection pool, globally available.
 /// This is atomic and safe and read-optimized.
@@ -1120,12 +1121,16 @@ mod test {
     use super::*;
 
     fn new_map() -> ClientServerMap {
-        Arc::new(Mutex::new(HashMap::new()))
+        Arc::new(DashMap::new())
     }
 
     // Mirrors Server::claim() inserting into the map.
-    fn claim(map: &ClientServerMap, key: (ProcessId, SecretKey), value: (ProcessId, SecretKey, ServerHost, ServerPort)) {
-        map.lock().insert(key, value);
+    fn claim(
+        map: &ClientServerMap,
+        key: (ProcessId, SecretKey),
+        value: (ProcessId, SecretKey, ServerHost, ServerPort),
+    ) {
+        map.insert(key, value);
     }
 
     // Mirrors the cancel-request lookup in Client::handle().
@@ -1133,12 +1138,12 @@ mod test {
         map: &ClientServerMap,
         key: &(ProcessId, SecretKey),
     ) -> Option<(ProcessId, SecretKey, ServerHost, ServerPort)> {
-        map.lock().get(key).cloned()
+        map.get(key).map(|entry| entry.value().clone())
     }
 
     // Mirrors Client::release() / Drop for Client removing from the map.
     fn release(map: &ClientServerMap, key: &(ProcessId, SecretKey)) {
-        map.lock().remove(key);
+        map.remove(key);
     }
 
     #[test]
@@ -1198,6 +1203,6 @@ mod test {
             handle.await.unwrap();
         }
 
-        assert!(map.lock().is_empty());
+        assert!(map.is_empty());
     }
 }
