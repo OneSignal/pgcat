@@ -339,9 +339,33 @@ describe "Candidate filtering based on `default_pool`" do
 
             processes[:replicas].each(&:reset)
             sleep(ban_time + 1)
+
+            # A single query walks every candidate (all banned replicas, then
+            # primary as a last resort) and kicks off pgcat's background
+            # unban recheck for each banned replica it finds along the way,
+            # but each replica's recheck is an independent async task with
+            # its own connect+auth round trip. Seeing ONE replica come back
+            # healthy doesn't mean the other ones have finished recovering
+            # yet, and the strict loop below can still land on one that
+            # hasn't. Keep triggering until every configured replica has
+            # individually been observed healthy at least once.
+            expected_ports = processes[:replicas].map(&:original_port)
+            seen_ports = []
+            30.times do
+              begin
+                response = conn.async_exec(select_server_port)
+                port = response[0]["port"].to_i
+                seen_ports << port unless port == primary_port || seen_ports.include?(port)
+              rescue
+                conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
+              end
+              break if expected_ports.all? { |p| seen_ports.include?(p) }
+              sleep 1
+            end
+
             response = nil
             number_of_replicas.times do
-              response = conn.async_exec("SELECT 1 + 2")
+              response = conn.async_exec(select_server_port)
             rescue
               conn = PG.connect(processes.pgcat.connection_string("sharded_db", "sharding_user"))
               failed_count += 1
