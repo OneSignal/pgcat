@@ -107,8 +107,12 @@ class PgcatProcess
   def stop
     return unless @pid
 
-    Process.kill("TERM", @pid)
-    Process.wait(@pid)
+    begin
+      Process.kill("TERM", @pid)
+      Process.wait(@pid)
+    rescue Errno::ESRCH
+      # Already exited; nothing left to clean up.
+    end
     @pid = nil
   end
 

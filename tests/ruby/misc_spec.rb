@@ -65,6 +65,21 @@ describe "Miscellaneous" do
     # Toxiproxy won't work either because it does not block keepalives
     # so our best bet is to query the OS keepalive params set on the socket
 
+    # Right after a connection is used, the kernel may briefly report a
+    # retransmission timer instead of the keepalive timer, until the
+    # connection settles into an idle state. Poll until that settles instead
+    # of asserting on a single snapshot.
+    def keepalive_ss_lines(port_search_criteria)
+      lines = nil
+      10.times do
+        lines = `ss -t4 state established -o -at '( #{port_search_criteria}  )'`.lines
+        lines.shift
+        break if lines.any? && lines.all? { |line| line =~ /timer:\(keepalive,/ }
+        sleep 0.2
+      end
+      lines
+    end
+
     context "default settings" do
       it "applies default keepalive settings" do
         # We query ss command to verify that we have correct keepalive values set
@@ -75,8 +90,7 @@ describe "Miscellaneous" do
         #0      0          127.0.0.1:60664    127.0.0.1:19432 timer:(keepalive,4.123ms,0)
 
         port_search_criteria = processes.all_databases.map { |d| "dport = :#{d.port}"}.join(" or ")
-        results = `ss -t4 state established -o -at '( #{port_search_criteria}  )'`.lines
-        results.shift
+        results = keepalive_ss_lines(port_search_criteria)
         results.each { |line| expect(line).to match(/timer:\(keepalive,.*ms,0\)/) }
       end
     end
@@ -95,8 +109,7 @@ describe "Miscellaneous" do
         processes.pgcat.wait_until_ready
 
         port_search_criteria = processes.all_databases.map { |d| "dport = :#{d.port}"}.join(" or ")
-        results = `ss -t4 state established -o -at '( #{port_search_criteria}  )'`.lines
-        results.shift
+        results = keepalive_ss_lines(port_search_criteria)
         results.each { |line| expect(line).to include("timer:(keepalive,1min") }
       end
     end

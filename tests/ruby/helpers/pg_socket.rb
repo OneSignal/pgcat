@@ -214,21 +214,37 @@ class PostgresSocket
     log "[F] Sent H message"
   end
 
-  def read_from_server()
-    output_messages = []
+  # TCP is a byte stream, not a message stream: a single recv_nonblock call
+  # is not guaranteed to return a full 5-byte header or message body in one
+  # shot, even once the socket is readable. Accumulate until we have exactly
+  # the number of bytes we asked for (or the peer closes / we time out).
+  def read_exact(length)
+    buffer = String.new
     retry_count = 0
-    message_code = nil
-    message_len = 0
-    loop do
+    while buffer.bytesize < length
       begin
-        message_code, message_len = @socket.recv_nonblock(5).unpack("al>")
+        chunk = @socket.recv_nonblock(length - buffer.bytesize)
+        return nil if chunk.empty? # peer closed the connection
+
+        buffer << chunk
+        retry_count = 0
       rescue IO::WaitReadable
-        return output_messages if retry_count > 50
+        return nil if retry_count > 50
 
         retry_count += 1
         sleep(0.01)
-        next
       end
+    end
+    buffer
+  end
+
+  def read_from_server()
+    output_messages = []
+    loop do
+      header = read_exact(5)
+      return output_messages if header.nil?
+
+      message_code, message_len = header.unpack("al>")
       message = {
         code: message_code,
         len: message_len,
@@ -238,7 +254,10 @@ class PostgresSocket
 
       actual_message_length = message_len - 4
       if actual_message_length > 0
-        message[:bytes] = @socket.recv(message_len - 4).unpack("C*")
+        body = read_exact(actual_message_length)
+        return output_messages if body.nil?
+
+        message[:bytes] = body.unpack("C*")
         log "\t#{message[:bytes].join(",")}"
         log "\t#{message[:bytes].map(&:chr).join(" ")}"
       end
