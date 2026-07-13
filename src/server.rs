@@ -1,11 +1,12 @@
 /// Implementation of the PostgreSQL server (database) protocol.
 /// Here we are pretending to the a Postgres client.
 use bytes::{Buf, BufMut, BytesMut};
+use dashmap::DashMap;
 use fallible_iterator::FallibleIterator;
 use log::{debug, error, info, trace, warn};
 use lru::LruCache;
 use once_cell::sync::Lazy;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use postgres_protocol::message;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem;
@@ -1287,8 +1288,7 @@ impl Server {
 
     /// Claim this server as mine for the purposes of query cancellation.
     pub fn claim(&mut self, process_id: i32, secret_key: i32) {
-        let mut guard = self.client_server_map.lock();
-        guard.insert(
+        self.client_server_map.insert(
             (process_id, secret_key),
             (
                 self.process_id,
@@ -1404,7 +1404,7 @@ impl Server {
         user: &User,
         query: &str,
     ) -> Result<Vec<String>, Error> {
-        let client_server_map: ClientServerMap = Arc::new(Mutex::new(HashMap::new()));
+        let client_server_map: ClientServerMap = Arc::new(DashMap::new());
 
         debug!("Connecting to server to obtain auth hashes.");
         let mut server = Server::startup(

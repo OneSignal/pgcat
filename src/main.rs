@@ -44,8 +44,8 @@ use jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+use dashmap::DashMap;
 use log::{debug, error, info, warn};
-use parking_lot::Mutex;
 use pgcat::format_duration;
 use tokio::net::TcpListener;
 #[cfg(not(windows))]
@@ -54,7 +54,6 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::signal::windows as win_signal;
 use tokio::{runtime::Builder, sync::mpsc};
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -139,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.show();
 
         // Tracks which client is connected to which server for query cancellation.
-        let client_server_map: ClientServerMap = Arc::new(Mutex::new(HashMap::new()));
+        let client_server_map: ClientServerMap = Arc::new(DashMap::new());
 
         // Statistics reporting.
         REPORTER.store(Arc::new(Reporter::default()));
