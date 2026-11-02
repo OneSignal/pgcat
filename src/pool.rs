@@ -5,8 +5,8 @@ use log::{debug, error, info, warn};
 use lru::LruCache;
 use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
+use rand::rng;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -689,7 +689,7 @@ impl ConnectionPool {
         // We start with a shuffled list of addresses even if we end up resorting
         // this is meant to avoid hitting instance 0 everytime if the sorting metric
         // ends up being the same for all instances
-        candidates.shuffle(&mut thread_rng());
+        candidates.shuffle(&mut rng());
 
         match effective_shard_id {
             Some(shard_id) => candidates.retain(|address| address.shard == shard_id),

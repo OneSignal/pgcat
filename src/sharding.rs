@@ -69,7 +69,7 @@ impl Sharder {
         let result = hasher.finalize();
 
         // Convert the SHA1 hash into hex so we can parse it as a large integer.
-        let hex = format!("{:x}", result);
+        let hex = crate::messages::to_hex(&result);
 
         // Parse the last 8 bytes as an integer (8 bytes = bigint).
         let key = i64::from_str_radix(&hex[hex.len() - 8..], 16).unwrap() as usize;

@@ -232,6 +232,17 @@ pub fn parse_startup(bytes: BytesMut) -> Result<HashMap<String, String>, Error> 
     Ok(result)
 }
 
+/// Lowercase hex encoding of a byte slice (what `{:x}` on a digest output used to give).
+pub fn to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Create md5 password hash given a salt.
 pub fn md5_hash_password(user: &str, password: &str, salt: &[u8]) -> Vec<u8> {
     let mut md5 = Md5::new();
@@ -243,7 +254,7 @@ pub fn md5_hash_password(user: &str, password: &str, salt: &[u8]) -> Vec<u8> {
     let output = md5.finalize_reset();
 
     // Second pass
-    md5_hash_second_pass(&(format!("{:x}", output)), salt)
+    md5_hash_second_pass(&to_hex(&output), salt)
 }
 
 pub fn md5_hash_second_pass(hash: &str, salt: &[u8]) -> Vec<u8> {
@@ -252,7 +263,7 @@ pub fn md5_hash_second_pass(hash: &str, salt: &[u8]) -> Vec<u8> {
     md5.update(hash);
     md5.update(salt);
 
-    let mut password = format!("md5{:x}", md5.finalize())
+    let mut password = format!("md5{}", to_hex(&md5.finalize()))
         .chars()
         .map(|x| x as u8)
         .collect::<Vec<u8>>();
@@ -1431,6 +1442,19 @@ impl PgErrorMsg {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_to_hex() {
+        assert_eq!(super::to_hex(&[]), "");
+        assert_eq!(super::to_hex(&[0x00, 0x0a, 0xff, 0x10]), "000aff10");
+    }
+
+    #[test]
+    fn test_md5_hash_password_matches_libpq() {
+        // md5(md5("pass" + "user") + salt), prefixed with "md5", NUL-terminated.
+        let hashed = super::md5_hash_password("user", "pass", &[1, 2, 3, 4]);
+        assert_eq!(hashed, b"md56cf524962d8413e6b0cdf79fddff891c\0".to_vec());
+    }
+
     use crate::messages::PgErrorMsg;
     use log::{error, info};
 
