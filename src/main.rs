@@ -28,7 +28,6 @@ extern crate log;
 extern crate md5;
 extern crate num_cpus;
 extern crate once_cell;
-extern crate rustls_pemfile;
 extern crate serde;
 extern crate serde_derive;
 extern crate sqlparser;

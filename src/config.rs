@@ -20,7 +20,7 @@ use crate::errors::Error;
 use crate::pool::{ClientServerMap, ConnectionPool};
 use crate::sharding::ShardingFunction;
 use crate::stats::AddressStats;
-use crate::tls::{load_certs, load_keys};
+use crate::tls::{load_certs, load_key};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -1417,7 +1417,7 @@ impl Config {
                 Ok(_) => {
                     // Cert is okay, but what about the private key?
                     match self.general.tls_private_key.clone() {
-                        Some(tls_private_key) => match load_keys(Path::new(&tls_private_key)) {
+                        Some(tls_private_key) => match load_key(Path::new(&tls_private_key)) {
                             Ok(_) => (),
                             Err(err) => {
                                 error!("tls_private_key is incorrectly configured: {:?}", err);
