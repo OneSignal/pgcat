@@ -232,9 +232,11 @@ impl BanService {
                 let now = chrono::offset::Utc::now().naive_utc();
                 match ban_reason {
                     BanReason::AdminBan(duration) => {
-                        now.timestamp() - timestamp.timestamp() > *duration
+                        now.and_utc().timestamp() - timestamp.and_utc().timestamp() > *duration
                     }
-                    _ => now.timestamp() - timestamp.timestamp() > self.ban_time,
+                    _ => {
+                        now.and_utc().timestamp() - timestamp.and_utc().timestamp() > self.ban_time
+                    }
                 }
             }
             None => return Some(UnbanReason::NotBanned),

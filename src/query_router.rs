@@ -200,15 +200,9 @@ impl QueryRouter {
 
         let query = message_cursor.read_string().unwrap();
 
-        let regex_set = match CUSTOM_SQL_REGEX_SET.get() {
-            Some(regex_set) => regex_set,
-            None => return None,
-        };
+        let regex_set = CUSTOM_SQL_REGEX_SET.get()?;
 
-        let regex_list = match CUSTOM_SQL_REGEX_LIST.get() {
-            Some(regex_list) => regex_list,
-            None => return None,
-        };
+        let regex_list = CUSTOM_SQL_REGEX_LIST.get()?;
 
         let matches: Vec<_> = regex_set.matches(&query).into_iter().collect();
 
@@ -425,18 +419,14 @@ impl QueryRouter {
 
                 // Likely a read-only query
                 Query(query) => {
-                    match &self.pool_settings.automatic_sharding_key {
-                        Some(_) => {
-                            // TODO: if we have multiple queries in the same message,
-                            // we can either split them and execute them individually
-                            // or discard shard selection. If they point to the same shard though,
-                            // we can let them through as-is.
-                            // This is basically building a database now :)
-                            let inferred_shard = self.infer_shard(query);
-                            self.handle_inferred_shard(inferred_shard, &mut prev_inferred_shard)?;
-                        }
-
-                        None => (),
+                    if self.pool_settings.automatic_sharding_key.is_some() {
+                        // TODO: if we have multiple queries in the same message,
+                        // we can either split them and execute them individually
+                        // or discard shard selection. If they point to the same shard though,
+                        // we can let them through as-is.
+                        // This is basically building a database now :)
+                        let inferred_shard = self.infer_shard(query);
+                        self.handle_inferred_shard(inferred_shard, &mut prev_inferred_shard)?;
                     };
 
                     let has_locks = !query.locks.is_empty();
@@ -455,17 +445,13 @@ impl QueryRouter {
 
                 // Likely a write
                 _ => {
-                    match &self.pool_settings.automatic_sharding_key {
-                        Some(_) => {
-                            // TODO: similar to the above, if we have multiple queries in the
-                            // same message, we can either split them and execute them individually
-                            // or discard shard selection. If they point to the same shard though,
-                            // we can let them through as-is.
-                            let inferred_shard = self.infer_shard_on_write(q)?;
-                            self.handle_inferred_shard(inferred_shard, &mut prev_inferred_shard)?;
-                        }
-
-                        None => (),
+                    if self.pool_settings.automatic_sharding_key.is_some() {
+                        // TODO: similar to the above, if we have multiple queries in the
+                        // same message, we can either split them and execute them individually
+                        // or discard shard selection. If they point to the same shard though,
+                        // we can let them through as-is.
+                        let inferred_shard = self.infer_shard_on_write(q)?;
+                        self.handle_inferred_shard(inferred_shard, &mut prev_inferred_shard)?;
                     };
                     visited_write_statement = true;
                     self.active_role = Some(Role::Primary);
@@ -594,12 +580,8 @@ impl QueryRouter {
     }
 
     fn process_selection(selection: &Option<Expr>, exprs: &mut Vec<Expr>) {
-        match selection {
-            Some(selection) => {
-                exprs.push(selection.clone());
-            }
-
-            None => (),
+        if let Some(selection) = selection {
+            exprs.push(selection.clone());
         };
     }
 
@@ -804,7 +786,7 @@ impl QueryRouter {
                     == a.target
                         .to_string()
                         .split('.')
-                        .last()
+                        .next_back()
                         .unwrap()
                         .to_lowercase()
             {
@@ -979,7 +961,7 @@ impl QueryRouter {
                 None
             }
 
-            1 => Some(shards.into_iter().last().unwrap()),
+            1 => Some(shards.into_iter().next_back().unwrap()),
 
             // TODO: support querying multiple shards (some day...)
             _ => {

@@ -1,4 +1,4 @@
-FROM europe-west4-docker.pkg.dev/core-infra-onesignal/development/rust-ubuntu:1.78.0-r1 AS builder
+FROM europe-west4-docker.pkg.dev/core-infra-onesignal/development/rust-ubuntu:1.89.0 AS builder
 COPY . /app
 WORKDIR /app
 RUN cargo build --release

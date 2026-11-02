@@ -536,7 +536,7 @@ where
                 BanReason::AdminBan(duration) => *duration,
                 _ => pool.ban_service.ban_time,
             };
-            let remaining = ban_duration - (now - ban_time.timestamp());
+            let remaining = ban_duration - (now - ban_time.and_utc().timestamp());
             if remaining <= 0 {
                 continue;
             }

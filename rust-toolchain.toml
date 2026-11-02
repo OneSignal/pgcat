@@ -1,0 +1,7 @@
+# Matches the OneSignal rust-circle-orb executor used to build the production image.
+# Cargo.toml's rust-version is the hard floor; this pins the exact version for local
+# builds and for pgcat's own CircleCI job (the cimg/rust image is rustup-managed).
+[toolchain]
+channel = "1.89.0"
+# llvm-tools-preview: cargo-binutils (rust-profdata / rust-cov) needs it for the CI coverage report.
+components = ["clippy", "rustfmt", "llvm-tools-preview"]

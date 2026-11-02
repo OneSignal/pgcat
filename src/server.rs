@@ -34,6 +34,9 @@ use std::io::Write;
 use pin_project::pin_project;
 
 #[pin_project(project = SteamInnerProj)]
+// The TLS variant is much larger than the plain one; boxing it would add an
+// indirection on every read/write of the hot path, so accept the size difference.
+#[allow(clippy::large_enum_variant)]
 pub enum StreamInner {
     Plain {
         #[pin]
@@ -401,15 +404,15 @@ impl Server {
                     debug!("Connecting to server using TLS");
 
                     let mut root_store = RootCertStore::empty();
-                    root_store.add_server_trust_anchors(
-                        webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| {
+                    root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
+                        |ta| {
                             OwnedTrustAnchor::from_subject_spki_name_constraints(
                                 ta.subject,
                                 ta.spki,
                                 ta.name_constraints,
                             )
-                        }),
-                    );
+                        },
+                    ));
 
                     let mut tls_config = rustls::ClientConfig::builder()
                         .with_safe_defaults()
@@ -1437,7 +1440,7 @@ async fn parse_query_message(message: &mut BytesMut) -> Result<Vec<String>, Erro
                 err.fields()
                     .iterator()
                     .fold(String::default(), |acc, element| acc
-                        + element.unwrap().value())
+                        + &String::from_utf8_lossy(element.unwrap().value_bytes()))
             )))
         }
         Ok(_) => {
