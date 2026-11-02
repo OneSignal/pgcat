@@ -7,7 +7,7 @@ use regex::{Regex, RegexSet};
 use sqlparser::ast::Statement::{Delete, Insert, Query, StartTransaction, Update};
 use sqlparser::ast::{
     Assignment, BinaryOperator, Expr, Ident, JoinConstraint, JoinOperator, SetExpr, Statement,
-    TableFactor, TableWithJoins, Value,
+    TableFactor, TableObject, TableWithJoins, UpdateTableFromKind, Value, ValueWithSpan,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -496,9 +496,18 @@ impl QueryRouter {
                 assert!(i.partitioned.is_none());
                 assert!(i.after_columns.is_empty());
 
-                Self::process_table(&i.table_name, &mut table_names);
+                if let TableObject::TableName(name) = &i.table {
+                    Self::process_table(name, &mut table_names);
+                }
                 if let Some(source) = &i.source {
-                    Self::process_query(source, &mut exprs, &mut table_names, &Some(&i.columns));
+                    // Column names are plain identifiers in Postgres; keep the last part.
+                    let columns = i
+                        .columns
+                        .iter()
+                        .filter_map(|column| column.0.last().and_then(|part| part.as_ident()))
+                        .cloned()
+                        .collect::<Vec<Ident>>();
+                    Self::process_query(source, &mut exprs, &mut table_names, &Some(&columns));
                 }
             }
             Delete(d) => {
@@ -518,19 +527,15 @@ impl QueryRouter {
                 }
                 Self::process_selection(&d.selection, &mut exprs);
             }
-            Update {
-                table,
-                assignments,
-                from,
-                selection,
-                returning: _,
-            } => {
-                Self::process_table_with_join(table, &mut exprs, &mut table_names);
-                if let Some(from_tbl) = from {
-                    Self::process_table_with_join(from_tbl, &mut exprs, &mut table_names);
+            Update(u) => {
+                Self::process_table_with_join(&u.table, &mut exprs, &mut table_names);
+                if let Some(from) = &u.from {
+                    let (UpdateTableFromKind::BeforeSet(from_tables)
+                    | UpdateTableFromKind::AfterSet(from_tables)) = from;
+                    Self::process_tables_with_join(from_tables, &mut exprs, &mut table_names);
                 }
-                Self::process_selection(selection, &mut exprs);
-                self.assignment_parser(assignments)?;
+                Self::process_selection(&u.selection, &mut exprs);
+                self.assignment_parser(&u.assignments)?;
             }
             _ => {
                 return Ok(None);
@@ -612,7 +617,9 @@ impl QueryRouter {
 
             // We can filter results based on join conditions, e.g.
             // SELECT * FROM t INNER JOIN B ON B.sharding_key = 5;
-            if let JoinOperator::Inner(JoinConstraint::On(expr)) = &join.join_operator {
+            if let JoinOperator::Inner(JoinConstraint::On(expr))
+            | JoinOperator::Join(JoinConstraint::On(expr)) = &join.join_operator
+            {
                 // Parse the selection criteria later.
                 exprs.push(expr.clone());
             };
@@ -620,7 +627,14 @@ impl QueryRouter {
     }
 
     fn process_table(name: &sqlparser::ast::ObjectName, table_names: &mut Vec<Vec<Ident>>) {
-        table_names.push(name.0.clone())
+        // Postgres table names are plain (possibly schema-qualified) identifiers.
+        table_names.push(
+            name.0
+                .iter()
+                .filter_map(|part| part.as_ident())
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Parse the shard number from the Bind message
@@ -879,7 +893,10 @@ impl QueryRouter {
 
             match &**right {
                 Expr::BinaryOp { .. } => result.extend(self.selection_parser(right, table_names)),
-                Expr::Value(Value::Number(value, ..)) => {
+                Expr::Value(ValueWithSpan {
+                    value: Value::Number(value, ..),
+                    ..
+                }) => {
                     if found {
                         match value.parse::<i64>() {
                             Ok(value) => result.push(ShardingKey::Value(value)),
@@ -890,17 +907,18 @@ impl QueryRouter {
                     }
                 }
 
-                Expr::Value(Value::Placeholder(placeholder)) => {
-                    match placeholder.replace('$', "").parse::<i16>() {
-                        Ok(placeholder) => result.push(ShardingKey::Placeholder(placeholder)),
-                        Err(_) => {
-                            debug!(
-                                "Prepared statement didn't have integer placeholders: {}",
-                                placeholder
-                            );
-                        }
+                Expr::Value(ValueWithSpan {
+                    value: Value::Placeholder(placeholder),
+                    ..
+                }) => match placeholder.replace('$', "").parse::<i16>() {
+                    Ok(placeholder) => result.push(ShardingKey::Placeholder(placeholder)),
+                    Err(_) => {
+                        debug!(
+                            "Prepared statement didn't have integer placeholders: {}",
+                            placeholder
+                        );
                     }
-                }
+                },
                 _ => (),
             };
         }
