@@ -1,5 +1,4 @@
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
 use bb8::{ManageConnection, Pool, PooledConnection, QueueStrategy};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
@@ -1040,7 +1039,6 @@ impl ServerPool {
     }
 }
 
-#[async_trait]
 impl ManageConnection for ServerPool {
     type Connection = Server;
     type Error = Error;
